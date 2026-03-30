@@ -239,7 +239,7 @@ static void dump_state(lpmd_config_state_t *state, char *str, int debug)
 	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "EPB [%d] ", state->epb);
 	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "EPP [%d] ", state->epp);
 	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "SliderAC [%d] ", state->balance_slider_ac);
-	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "SliderDC [%d] ", state->balance_slider_ac);
+	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "SliderDC [%d] ", state->balance_slider_dc);
 	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "OffsetAC [%d] ", state->slider_offset_ac);
 	offset += snprintf(buf + offset , MAX_STR_LENGTH - offset, "OffsetDC [%d] ", state->slider_offset_dc);
 
