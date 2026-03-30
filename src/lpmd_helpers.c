@@ -31,7 +31,7 @@ int copy_user_string(char *src, char *dst, int size)
 {
 	int offset_src, offset_dst;
 
-	for (offset_src = 0, offset_dst = 0; src[offset_src] != '\0' && offset_src < size; offset_src++) {
+	for (offset_src = 0, offset_dst = 0; src[offset_src] != '\0' && offset_src < size && offset_dst < size - 1; offset_src++) {
 		/* Ignore heading spaces */
 		if (src[offset_src] == ' ' && !offset_dst)
 			continue;
@@ -41,8 +41,8 @@ int copy_user_string(char *src, char *dst, int size)
 	dst[offset_dst] = '\0';
 
 	/* Remove tailing spaces */
-	while (dst[--offset_dst] == ' ')
-		dst[offset_dst] = '\0';
+	while (offset_dst > 0 && dst[offset_dst - 1] == ' ')
+		dst[--offset_dst] = '\0';
 
 	return 0;
 }
