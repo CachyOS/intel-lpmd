@@ -42,7 +42,7 @@ for Intel Energy Optimizer (LPMD) daemon
 		 0: auto. (opportunistic Low Power Mode enter/exit)
 		 2: Process-CPU affinity based Low Power Mode enter/exit
 	-->
-	<BalancedDef>-1</BalancedDef>
+	<BalancedDef>0</BalancedDef>
 
 	<!--
 		Default behavior when Power saver setting is used
@@ -51,7 +51,7 @@ for Intel Energy Optimizer (LPMD) daemon
 		 0: auto. (opportunistic Low Power Mode enter/exit)
 		 2: Process-CPU affinity based Low Power Mode enter/exit
 	-->
-	<PowersaverDef>-1</PowersaverDef>
+	<PowersaverDef>0</PowersaverDef>
 
 	<!--
 		Use HFI LPM hints
