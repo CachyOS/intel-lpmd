@@ -150,6 +150,14 @@ static void power_profiles_changed_cb(void)
 		} else {
 			lpmd_log_warn("Ignore unsupported power profile: %s\n", active_profile);
 		}
+
+		/*
+		 * LPMD might go into a power profile that has LPMD disabled. When going
+		 * back to a power profile with AUTO LPMD polling is disabled so
+		 * it needs to be reinitialized.
+		 */
+		if (lpmd_config.wlt_proxy_enable)
+			lpmd_config.data.polling_interval = DEF_POLLING_INTERVAL;
 	}
 }
 
@@ -300,7 +308,7 @@ static void* lpmd_core_main_loop(void *arg)
 {
 	int n;
 
-	lpmd_config.data.polling_interval = 100;
+	lpmd_config.data.polling_interval = DEF_POLLING_INTERVAL;
 
 	for (;;) {
 
