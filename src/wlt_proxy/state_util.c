@@ -197,13 +197,22 @@ static int init_perf_calculations(int n)
 }
 
 /*
- * Invalidate the cached per-CPU aperf/mperf/pperf/tsc baselines. After suspend
- * the cached values straddle the sleep gap and produce a bogus delta on the
- * first post-resume sample; cpu_get_diff_*() treats a zero cache as "first
- * call" and returns 0, so the next sample re-baselines cleanly.
+ * Re-baseline the cached per-CPU aperf/mperf/pperf/tsc counters after suspend.
+ *
+ * Just zeroing the arrays is not enough. cpu_get_diff_*() treats a zero
+ * cache as "first call" and returns 0, which means the first post-resume
+ * read_wlt_proxy() cycle would hand update_perf_diffs() all-zero diffs and
+ * then feed those straight into state_machine_auto() - emitting the wrong
+ * WLT hint or demoting the proxy state. So after zeroing we immediately do
+ * an init-only pass through update_perf_diffs() - the same trick
+ * util_init_proxy() uses at startup - which reads current values into the
+ * cache without computing load/stall. The *next* real sample is then a
+ * proper delta against a fresh baseline.
  */
 void util_reset_proxy(void)
 {
+    float dummy;
+
     if (!last_msr_n)
         return;
     if (last_aperf)
@@ -214,6 +223,8 @@ void util_reset_proxy(void)
         memset(last_pperf, 0, sizeof(uint64_t) * last_msr_n);
     if (last_tsc)
         memset(last_tsc, 0, sizeof(uint64_t) * last_msr_n);
+
+    update_perf_diffs(&dummy, 1);
 }
 
 /*helper - pperf reading */

@@ -317,21 +317,22 @@ static int proc_message(message_capsul_t *msg)
 			break;
 		case LPM_SUSPEND:
 			lpmd_log_debug("Freezing lpmd for suspend\n");
-			update_lpmd_state(LPMD_FREEZE);
+			lpmd_freeze_reason(LPMD_FREEZE_SUSPEND);
 			break;
 		case LPM_RESUME:
 			lpmd_log_debug("Resetting counters after resume\n");
 			util_reset_counters();
-			if (lpmd_config.wlt_proxy_enable)
+			if (lpmd_config.wlt_proxy_enable) {
 				wlt_proxy_reset_counters();
-			/*
-			 * After a wlt_proxy suspend the proxy polling timer is
-			 * stale; nudge it back to the default so read_wlt_proxy
-			 * runs again on the next core loop iteration.
-			 */
-			if (lpmd_config.wlt_proxy_enable)
+				/*
+				 * After a wlt_proxy suspend the proxy polling
+				 * timer is stale; nudge it back to the default
+				 * so read_wlt_proxy runs again on the next core
+				 * loop iteration.
+				 */
 				lpmd_config.data.polling_interval = DEF_POLLING_INTERVAL;
-			update_lpmd_state(LPMD_RESTORE);
+			}
+			lpmd_unfreeze_reason(LPMD_FREEZE_SUSPEND);
 			break;
 		default:
 			break;

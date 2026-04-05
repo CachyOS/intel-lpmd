@@ -119,6 +119,16 @@ enum lpmd_states {
 	LPMD_TERMINATE,
 };
 
+/*
+ * Bitmask of reasons why lpmd is frozen. Multiple sources can freeze the
+ * daemon at once (CPU hotplug + suspend), so each one tracks its own bit
+ * and the daemon stays frozen until every reason has been cleared.
+ */
+enum lpmd_freeze_reason {
+	LPMD_FREEZE_HOTPLUG = 1 << 0,
+	LPMD_FREEZE_SUSPEND = 1 << 1,
+};
+
 enum lpmd_update_reason {
 	UPDATE_USER,
 	UPDATE_UTIL,
@@ -317,6 +327,8 @@ int lpmd_get_config(lpmd_config_t *lpmd_config);
 
 /* lpmd_state_machine.c */
 int update_lpmd_state(int state);
+int lpmd_freeze_reason(int reason);
+int lpmd_unfreeze_reason(int reason);
 int get_lpmd_state(void);
 int lpmd_init_config_state(lpmd_config_state_t *state);
 int lpmd_build_config_states(lpmd_config_t *config);

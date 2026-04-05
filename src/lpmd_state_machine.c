@@ -39,6 +39,14 @@
 static int lpmd_state = LPMD_OFF;
 static int saved_lpmd_state = LPMD_OFF;
 
+/*
+ * Bitmap of active freeze sources (see enum lpmd_freeze_reason). The daemon
+ * stays in LPMD_FREEZE until every bit has been cleared, so overlapping
+ * freeze events (e.g. suspend arriving while CPU hotplug is still settling)
+ * don't let a later restore prematurely unfreeze.
+ */
+static unsigned int freeze_reasons;
+
 static char *lpmd_state_name[] = {
 	[LPMD_ON]		= "     ON",
 	[LPMD_OFF]		= "    OFF",
@@ -53,18 +61,15 @@ int update_lpmd_state(int new)
 	lpmd_lock();
 	switch (new) {
 		case LPMD_FREEZE:
-			if (lpmd_state == LPMD_FREEZE)
-				break;
-			lpmd_log_debug ("Freeze lpmd\n");
-			saved_lpmd_state = lpmd_state;
-			lpmd_state = LPMD_FREEZE;
-			break;
 		case LPMD_RESTORE:
-			if (lpmd_state != LPMD_FREEZE)
-				break;
-			lpmd_log_debug ("Restore lpmd\n");
-			lpmd_state = saved_lpmd_state;
-			saved_lpmd_state = lpmd_state;
+			/*
+			 * FREEZE/RESTORE transitions must go through
+			 * lpmd_freeze_reason()/lpmd_unfreeze_reason() so that
+			 * overlapping freeze sources stay tracked. Drop these
+			 * raw transitions here rather than stomping the bitmap.
+			 */
+			lpmd_log_warn("update_lpmd_state(FREEZE/RESTORE) ignored; "
+				      "use lpmd_freeze_reason()\n");
 			break;
 		default:
 			if (lpmd_state == LPMD_FREEZE)
@@ -72,6 +77,52 @@ int update_lpmd_state(int new)
 			else
 				lpmd_state = new;
 			break;
+	}
+	lpmd_unlock();
+	return 0;
+}
+
+int lpmd_freeze_reason(int reason)
+{
+	unsigned int bit = (unsigned int)reason;
+
+	if (!bit)
+		return 0;
+
+	lpmd_lock();
+	if (!freeze_reasons) {
+		lpmd_log_debug("Freeze lpmd (reason 0x%x)\n", bit);
+		saved_lpmd_state = lpmd_state;
+		lpmd_state = LPMD_FREEZE;
+	} else if (!(freeze_reasons & bit)) {
+		lpmd_log_debug("Add freeze reason 0x%x (existing 0x%x)\n",
+			       bit, freeze_reasons);
+	}
+	freeze_reasons |= bit;
+	lpmd_unlock();
+	return 0;
+}
+
+int lpmd_unfreeze_reason(int reason)
+{
+	unsigned int bit = (unsigned int)reason;
+
+	if (!bit)
+		return 0;
+
+	lpmd_lock();
+	if (!(freeze_reasons & bit)) {
+		lpmd_unlock();
+		return 0;
+	}
+	freeze_reasons &= ~bit;
+	if (!freeze_reasons && lpmd_state == LPMD_FREEZE) {
+		lpmd_log_debug("Restore lpmd\n");
+		lpmd_state = saved_lpmd_state;
+		saved_lpmd_state = lpmd_state;
+	} else if (freeze_reasons) {
+		lpmd_log_debug("Keep lpmd frozen (remaining reasons 0x%x)\n",
+			       freeze_reasons);
 	}
 	lpmd_unlock();
 	return 0;

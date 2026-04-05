@@ -115,9 +115,9 @@ free:
 	update_reason(UPDATE_CPUHOTPLUG);
 
 	if (ret)
-		return update_lpmd_state(LPMD_RESTORE);
+		return lpmd_unfreeze_reason(LPMD_FREEZE_HOTPLUG);
 
-	return update_lpmd_state(LPMD_FREEZE);
+	return lpmd_freeze_reason(LPMD_FREEZE_HOTPLUG);
 }
 
 int uevent_init(void)
