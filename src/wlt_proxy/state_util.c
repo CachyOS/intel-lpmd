@@ -90,6 +90,7 @@ static uint64_t *last_aperf = NULL;
 static uint64_t *last_mperf = NULL;
 static uint64_t *last_pperf = NULL;
 static uint64_t *last_tsc = NULL;
+static int last_msr_n = 0;
 
 /*
  * Intel Alderlake hardware errata #ADL026: pperf bits 31:64 could be incorrect.
@@ -190,8 +191,29 @@ static int init_perf_calculations(int n)
         lpmd_log_error("calloc failure perf vars\n");
         return -2;
     }
+    last_msr_n = n;
 
     return LPMD_SUCCESS;
+}
+
+/*
+ * Invalidate the cached per-CPU aperf/mperf/pperf/tsc baselines. After suspend
+ * the cached values straddle the sleep gap and produce a bogus delta on the
+ * first post-resume sample; cpu_get_diff_*() treats a zero cache as "first
+ * call" and returns 0, so the next sample re-baselines cleanly.
+ */
+void util_reset_proxy(void)
+{
+    if (!last_msr_n)
+        return;
+    if (last_aperf)
+        memset(last_aperf, 0, sizeof(uint64_t) * last_msr_n);
+    if (last_mperf)
+        memset(last_mperf, 0, sizeof(uint64_t) * last_msr_n);
+    if (last_pperf)
+        memset(last_pperf, 0, sizeof(uint64_t) * last_msr_n);
+    if (last_tsc)
+        memset(last_tsc, 0, sizeof(uint64_t) * last_msr_n);
 }
 
 /*helper - pperf reading */
@@ -483,6 +505,8 @@ static void uninit_perf_calculations() {
         free(last_pperf);
     if (last_tsc)
         free(last_tsc);
+    last_aperf = last_mperf = last_pperf = last_tsc = NULL;
+    last_msr_n = 0;
 }
 /********************perf calculation - end *****************************************/
 

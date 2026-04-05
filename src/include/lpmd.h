@@ -94,6 +94,7 @@ static int dummy_printf(const char *__restrict __format, ...)
 
 typedef enum {
 	TERMINATE, LPM_FORCE_ON, LPM_FORCE_OFF, LPM_AUTO, HFI_EVENT,
+	LPM_SUSPEND, LPM_RESUME,
 } message_name_t;
 
 #define MAX_MSG_SIZE		512
@@ -323,6 +324,7 @@ int lpmd_enter_next_state(void);
 
 /* lpmd_util.c */
 int util_update(lpmd_config_t *lpmd_config);
+void util_reset_counters(void);
 
 /* lpmd_hfi.c */
 int hfi_init(void);

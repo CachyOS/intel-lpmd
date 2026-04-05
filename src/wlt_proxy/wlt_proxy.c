@@ -46,3 +46,8 @@ int wlt_proxy_init() {
 void wlt_proxy_uninit(void) {
     util_uninit_proxy();
 }
+
+/* invalidate cached counters after suspend/resume */
+void wlt_proxy_reset_counters(void) {
+    util_reset_proxy();
+}

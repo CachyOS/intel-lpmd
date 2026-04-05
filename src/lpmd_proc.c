@@ -240,6 +240,60 @@ static void connect_to_upower_daemon(void)
 /* Poll time out default */
 #define POLL_TIMEOUT_DEFAULT_SECONDS	1
 
+static void logind_prepare_for_sleep_cb(GDBusConnection *connection,
+					 const gchar *sender_name,
+					 const gchar *object_path,
+					 const gchar *interface_name,
+					 const gchar *signal_name,
+					 GVariant *parameters,
+					 gpointer user_data)
+{
+	gboolean going_to_sleep;
+
+	if (!parameters || !g_variant_is_of_type(parameters, G_VARIANT_TYPE("(b)")))
+		return;
+
+	g_variant_get(parameters, "(b)", &going_to_sleep);
+	lpmd_log_debug("logind PrepareForSleep: %s\n", going_to_sleep ? "suspend" : "resume");
+
+	/*
+	 * Hand off to the core thread via the wake pipe. Counter resets must
+	 * happen on the thread that owns the sample caches (util_update and
+	 * read_wlt_proxy are only called from lpmd_core_main_loop), so we just
+	 * enqueue the event and let proc_message() do the work.
+	 */
+	lpmd_send_message(going_to_sleep ? LPM_SUSPEND : LPM_RESUME, 0, NULL);
+}
+
+static void connect_to_logind(void)
+{
+	g_autoptr(GDBusConnection) bus = NULL;
+	guint sub_id;
+
+	bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
+	if (!bus) {
+		lpmd_log_info("Could not connect to system bus for logind PrepareForSleep\n");
+		return;
+	}
+
+	sub_id = g_dbus_connection_signal_subscribe(bus,
+						"org.freedesktop.login1",
+						"org.freedesktop.login1.Manager",
+						"PrepareForSleep",
+						"/org/freedesktop/login1",
+						NULL,
+						G_DBUS_SIGNAL_FLAGS_NONE,
+						logind_prepare_for_sleep_cb,
+						NULL, NULL);
+	if (!sub_id)
+		lpmd_log_info("Could not subscribe to logind PrepareForSleep signal\n");
+	else
+		lpmd_log_info("Subscribed to logind PrepareForSleep\n");
+
+	/* Keep the bus connection alive for the lifetime of the subscription. */
+	g_object_ref(bus);
+}
+
 // called from LPMD main thread to process user and system messages
 static int proc_message(message_capsul_t *msg)
 {
@@ -260,6 +314,24 @@ static int proc_message(message_capsul_t *msg)
 		case LPM_AUTO:
 			// Enable oppotunistic LPM
 			update_lpmd_state(LPMD_AUTO);
+			break;
+		case LPM_SUSPEND:
+			lpmd_log_debug("Freezing lpmd for suspend\n");
+			update_lpmd_state(LPMD_FREEZE);
+			break;
+		case LPM_RESUME:
+			lpmd_log_debug("Resetting counters after resume\n");
+			util_reset_counters();
+			if (lpmd_config.wlt_proxy_enable)
+				wlt_proxy_reset_counters();
+			/*
+			 * After a wlt_proxy suspend the proxy polling timer is
+			 * stale; nudge it back to the default so read_wlt_proxy
+			 * runs again on the next core loop iteration.
+			 */
+			if (lpmd_config.wlt_proxy_enable)
+				lpmd_config.data.polling_interval = DEF_POLLING_INTERVAL;
+			update_lpmd_state(LPMD_RESTORE);
 			break;
 		default:
 			break;
@@ -432,6 +504,7 @@ int lpmd_main(void)
 		return ret;
 
 	connect_to_upower_daemon();
+	connect_to_logind();
 //	 Pipe is used for communication between two processes
 	ret = pipe (wake_fds);
 	if (ret) {

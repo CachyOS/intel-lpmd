@@ -95,6 +95,7 @@ int do_countdown(enum state_idx);
 /* state_util.c */
 int util_init_proxy(void);
 void util_uninit_proxy(void);
+void util_reset_proxy(void);
 
 int state_max_avg();
 int update_perf_diffs(float *, int);

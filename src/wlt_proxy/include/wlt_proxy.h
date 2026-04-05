@@ -26,4 +26,6 @@ int wlt_proxy_init();
 
 void wlt_proxy_uninit(void);
 
+void wlt_proxy_reset_counters(void);
+
 #endif/* _WLT_PROXY_H_ */

@@ -72,6 +72,19 @@ static int busy_gfx = -1;
 char *path_gfx_rc6;
 char *path_sam_mc6;
 
+/*
+ * Cached baselines used to compute deltas. They live at file scope so that
+ * util_reset_counters() can invalidate them on resume; stale baselines across
+ * suspend/resume produce bogus utilization for the first sample and drive
+ * incorrect state selection.
+ */
+static struct timespec gfx_ts_prev;
+static unsigned long long gfx_rc6_prev = ULLONG_MAX;
+static unsigned long long sam_mc6_prev = ULLONG_MAX;
+static uint64_t gfx_msr_val_prev;
+static uint64_t gfx_msr_tsc_prev;
+static int proc_stat_rebase;
+
 static int probe_gfx_util_sysfs(void)
 {
 	FILE *fp;
@@ -111,7 +124,6 @@ static int probe_gfx_util_sysfs(void)
 
 static int get_gfx_util_sysfs(unsigned long long time_ms)
 {
-	static unsigned long long gfx_rc6_prev = ULLONG_MAX, sam_mc6_prev = ULLONG_MAX;
 	unsigned long long gfx_rc6 = ULLONG_MAX, sam_mc6 = ULLONG_MAX;
 	FILE *fp;
 	unsigned long long gfx_util, sam_util;
@@ -157,7 +169,6 @@ static int get_gfx_util_sysfs(unsigned long long time_ms)
 static int parse_gfx_util_sysfs(void)
 {
 	static int gfx_sysfs_available = 1;
-	static struct timespec ts_prev;
 	struct timespec ts_cur;
 	unsigned long time_ms;
 	int ret;
@@ -169,19 +180,19 @@ static int parse_gfx_util_sysfs(void)
 
 	clock_gettime (CLOCK_MONOTONIC, &ts_cur);
 
-	if (!ts_prev.tv_sec && !ts_prev.tv_nsec) {
+	if (!gfx_ts_prev.tv_sec && !gfx_ts_prev.tv_nsec) {
 		ret = probe_gfx_util_sysfs();
 		if (ret) {
 			gfx_sysfs_available = 0;
 			return 1;
 		}
-		ts_prev = ts_cur;
+		gfx_ts_prev = ts_cur;
 		return 0;
 	}
 
-	time_ms = (ts_cur.tv_sec - ts_prev.tv_sec) * 1000 + (ts_cur.tv_nsec - ts_prev.tv_nsec) / 1000000;
+	time_ms = (ts_cur.tv_sec - gfx_ts_prev.tv_sec) * 1000 + (ts_cur.tv_nsec - gfx_ts_prev.tv_nsec) / 1000000;
 
-	ts_prev = ts_cur;
+	gfx_ts_prev = ts_cur;
 	busy_gfx = get_gfx_util_sysfs(time_ms);
 
 	return 0;
@@ -191,9 +202,7 @@ static int parse_gfx_util_sysfs(void)
 #define MSR_PKG_ANY_GFXE_C0_RES	0x65A
 static int parse_gfx_util_msr(void)
 {
-	static uint64_t val_prev;
 	uint64_t val;
-	static uint64_t tsc_prev;
 	uint64_t tsc;
 	int cpu;
 
@@ -208,22 +217,22 @@ static int parse_gfx_util_msr(void)
 	if (val == UINT64_MAX)
 		goto err;
 
-	if (!tsc_prev || !val_prev) {
-		tsc_prev = tsc;
-		val_prev = val;
+	if (!gfx_msr_tsc_prev || !gfx_msr_val_prev) {
+		gfx_msr_tsc_prev = tsc;
+		gfx_msr_val_prev = val;
 		return 0;
 	}
 
-	if (val > val_prev && tsc >tsc_prev) {
+	if (val > gfx_msr_val_prev && tsc > gfx_msr_tsc_prev) {
 		uint64_t _busy_gfx;
 
-		_busy_gfx = abs(val - val_prev) * 10000ULL / abs(tsc - tsc_prev);
+		_busy_gfx = abs(val - gfx_msr_val_prev) * 10000ULL / abs(tsc - gfx_msr_tsc_prev);
 		if (_busy_gfx < INT_MAX)
 			busy_gfx = (int)_busy_gfx;
 	}
 
-	tsc_prev = tsc;
-	val_prev = val;
+	gfx_msr_tsc_prev = tsc;
+	gfx_msr_val_prev = val;
 	return 0;
 err:
 	lpmd_log_debug("parse_gfx_util_msr failed\n");
@@ -361,6 +370,27 @@ static int parse_proc_stat(void)
 	}
 
 	fclose (filep);
+
+	/*
+	 * After a resume (or any explicit counter reset) the old prev snapshot
+	 * straddles the suspend gap and produces a garbage delta. Rebase prev to
+	 * the freshly-sampled cur so the next call computes a valid delta, and
+	 * report -1 for this sample so the state machine ignores it.
+	 */
+	if (proc_stat_rebase) {
+		/*
+		 * Recompute the array byte size here: the outer `size` is reused
+		 * as getline()'s buffer-length argument inside the read loop and
+		 * no longer holds sizeof(struct proc_stat_info) * count.
+		 */
+		memcpy(proc_stat_prev, proc_stat_cur,
+		       sizeof(struct proc_stat_info) * count);
+		proc_stat_rebase = 0;
+		busy_sys = -1;
+		busy_cpu = -1;
+		return 0;
+	}
+
 	busy_sys = calculate_busypct (&proc_stat_cur[sys_idx], &proc_stat_prev[sys_idx]);
 
 	busy_cpu = 0;
@@ -374,6 +404,26 @@ static int parse_proc_stat(void)
 	}
 
 	return 0;
+}
+
+void util_reset_counters(void)
+{
+	/*
+	 * Invalidate every cached baseline the utilization code compares against.
+	 * Each sample path already has a "first call" branch (ULLONG_MAX / zero /
+	 * empty timespec) that stores the new reading without computing a delta,
+	 * so the next sample acts like a fresh init.
+	 */
+	gfx_ts_prev.tv_sec = 0;
+	gfx_ts_prev.tv_nsec = 0;
+	gfx_rc6_prev = ULLONG_MAX;
+	sam_mc6_prev = ULLONG_MAX;
+	gfx_msr_val_prev = 0;
+	gfx_msr_tsc_prev = 0;
+	busy_sys = -1;
+	busy_cpu = -1;
+	busy_gfx = -1;
+	proc_stat_rebase = 1;
 }
 
 int util_update(lpmd_config_t *lpmd_config)
