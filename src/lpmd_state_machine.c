@@ -183,6 +183,142 @@ int lpmd_init_config_state(lpmd_config_state_t *state)
 }
 
 static int current_idx = DEFAULT_OFF;
+static int default_util_mode;
+static struct timespec auto_util_state_ts;
+static uint64_t auto_util_lp_avg_ms;
+static uint64_t auto_util_lp_samples;
+static uint64_t auto_util_perf_avg_ms;
+static uint64_t auto_util_perf_samples;
+
+enum auto_util_state_kind {
+	AUTO_UTIL_STATE_OTHER,
+	AUTO_UTIL_STATE_LP,
+	AUTO_UTIL_STATE_PERF,
+};
+
+static enum auto_util_state_kind get_auto_util_state_kind(int idx)
+{
+	if (!default_util_mode)
+		return AUTO_UTIL_STATE_OTHER;
+
+	if (idx == CONFIG_STATE_BASE)
+		return AUTO_UTIL_STATE_LP;
+
+	if (idx == CONFIG_STATE_BASE + 1)
+		return AUTO_UTIL_STATE_PERF;
+
+	return AUTO_UTIL_STATE_OTHER;
+}
+
+static int auto_util_ts_valid(void)
+{
+	return auto_util_state_ts.tv_sec || auto_util_state_ts.tv_nsec;
+}
+
+static uint64_t auto_util_elapsed_ms(struct timespec *start, struct timespec *end)
+{
+	time_t sec = end->tv_sec - start->tv_sec;
+	long nsec = end->tv_nsec - start->tv_nsec;
+
+	if (nsec < 0) {
+		sec--;
+		nsec += 1000000000L;
+	}
+
+	return (uint64_t)sec * 1000ULL + (uint64_t)nsec / 1000000ULL;
+}
+
+static void auto_util_update_avg(uint64_t *avg_ms, uint64_t *samples, uint64_t sample_ms)
+{
+	if (!*samples) {
+		*avg_ms = sample_ms;
+		*samples = 1;
+		return;
+	}
+
+	if (sample_ms >= *avg_ms)
+		*avg_ms += (sample_ms - *avg_ms) / (*samples + 1);
+	else
+		*avg_ms -= (*avg_ms - sample_ms) / (*samples + 1);
+
+	(*samples)++;
+}
+
+static void auto_util_track_state_change(int prev_idx, int next_idx)
+{
+	enum auto_util_state_kind prev_kind = get_auto_util_state_kind(prev_idx);
+	enum auto_util_state_kind next_kind = get_auto_util_state_kind(next_idx);
+	struct timespec now = {};
+	uint64_t elapsed_ms;
+
+	if (!default_util_mode)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	if (prev_kind == next_kind) {
+		if (next_kind != AUTO_UTIL_STATE_OTHER && !auto_util_ts_valid())
+			auto_util_state_ts = now;
+		return;
+	}
+
+	if (prev_kind != AUTO_UTIL_STATE_OTHER && auto_util_ts_valid()) {
+		elapsed_ms = auto_util_elapsed_ms(&auto_util_state_ts, &now);
+
+		if (prev_kind == AUTO_UTIL_STATE_LP) {
+			auto_util_update_avg(&auto_util_lp_avg_ms, &auto_util_lp_samples, elapsed_ms);
+			lpmd_log_debug("AUTO low-power residency avg=%llums samples=%llu\n",
+				       (unsigned long long)auto_util_lp_avg_ms,
+				       (unsigned long long)auto_util_lp_samples);
+		} else {
+			auto_util_update_avg(&auto_util_perf_avg_ms, &auto_util_perf_samples, elapsed_ms);
+			lpmd_log_debug("AUTO out-of-low-power residency avg=%llums samples=%llu\n",
+				       (unsigned long long)auto_util_perf_avg_ms,
+				       (unsigned long long)auto_util_perf_samples);
+		}
+	}
+
+	if (next_kind == AUTO_UTIL_STATE_OTHER)
+		memset(&auto_util_state_ts, 0, sizeof(auto_util_state_ts));
+	else
+		auto_util_state_ts = now;
+}
+
+static int auto_util_hysteresis_blocked(lpmd_config_t *config, int idx)
+{
+	enum auto_util_state_kind cur_kind = get_auto_util_state_kind(current_idx);
+	enum auto_util_state_kind next_kind = get_auto_util_state_kind(idx);
+	uint64_t avg_ms = 0;
+	int hyst_ms = 0;
+	const char *direction;
+
+	if (cur_kind == AUTO_UTIL_STATE_OTHER || next_kind == AUTO_UTIL_STATE_OTHER)
+		return 0;
+
+	if (cur_kind == next_kind)
+		return 0;
+
+	if (next_kind == AUTO_UTIL_STATE_LP) {
+		if (!config->util_entry_hyst || !auto_util_lp_samples)
+			return 0;
+		avg_ms = auto_util_lp_avg_ms;
+		hyst_ms = config->util_entry_hyst;
+		direction = "enter";
+	} else {
+		if (!config->util_exit_hyst || !auto_util_perf_samples)
+			return 0;
+		avg_ms = auto_util_perf_avg_ms;
+		hyst_ms = config->util_exit_hyst;
+		direction = "exit";
+	}
+
+	if (avg_ms >= (uint64_t)hyst_ms)
+		return 0;
+
+	lpmd_log_debug("Ignore AUTO %s request: avg=%llums hyst=%dms\n",
+		       direction, (unsigned long long)avg_ms, hyst_ms);
+	return 1;
+}
 
 static int config_state_match(lpmd_config_t *config, int idx)
 {
@@ -322,6 +458,8 @@ static int choose_next_state(lpmd_config_t *config)
 	/* Choose a config state */
 	for (i = CONFIG_STATE_BASE; i < CONFIG_STATE_BASE + config->config_state_count; ++i) {
 		if (config_state_match(config, i)) {
+			if (auto_util_hysteresis_blocked(config, i))
+				return current_idx;
 			dump_state(&config->config_states[i], "Choose", 1);
 			return i;
 		}
@@ -454,6 +592,7 @@ int lpmd_enter_next_state(void)
 	get_state_interval(config, idx);
 
 	if (need_enter(config, idx)) {
+		auto_util_track_state_change(current_idx, idx);
 		enter_state(config, idx);
 		current_idx = idx;
 		dump_state(&config->config_states[idx], "Enter", 0);
@@ -483,6 +622,10 @@ static void dump_states(lpmd_config_t *lpmd_config)
 	lpmd_log_info ("Util Enable:%d\n", lpmd_config->util_enable);
 	lpmd_log_info ("Util entry threshold:%d\n", lpmd_config->util_entry_threshold);
 	lpmd_log_info ("Util exit threshold:%d\n", lpmd_config->util_exit_threshold);
+	lpmd_log_info ("Util entry delay:%d\n", lpmd_config->util_entry_delay);
+	lpmd_log_info ("Util exit delay:%d\n", lpmd_config->util_exit_delay);
+	lpmd_log_info ("Util entry hyst:%d\n", lpmd_config->util_entry_hyst);
+	lpmd_log_info ("Util exit hyst:%d\n", lpmd_config->util_exit_hyst);
 	lpmd_log_info ("Util LP Mode CPUs:%s\n", lpmd_config->lp_mode_cpus);
 	lpmd_log_info ("EPP in LP Mode:%d\n", lpmd_config->lp_mode_epp);
 	lpmd_log_info ("CPU Family:%d\n", lpmd_config->cpu_family);
@@ -536,6 +679,13 @@ static void dump_states(lpmd_config_t *lpmd_config)
 static int build_default_states(lpmd_config_t *config)
 {
 	lpmd_config_state_t *state;
+
+	default_util_mode = 0;
+	memset(&auto_util_state_ts, 0, sizeof(auto_util_state_ts));
+	auto_util_lp_avg_ms = 0;
+	auto_util_lp_samples = 0;
+	auto_util_perf_avg_ms = 0;
+	auto_util_perf_samples = 0;
 
 	state = &config->config_states[DEFAULT_OFF];
 	lpmd_init_config_state(state);
@@ -597,8 +747,13 @@ static int build_default_states(lpmd_config_t *config)
 	state->enter_cpu_load_thres = config->util_exit_threshold;
 	state->itmt_state = config->ignore_itmt ? SETTING_IGNORE : 0;
 	state->irq_migrate = 1;
-	state->min_poll_interval = 100;
-	state->max_poll_interval = 1000;
+	if (config->util_exit_delay > 0) {
+		state->min_poll_interval = config->util_exit_delay;
+		state->max_poll_interval = config->util_exit_delay;
+	} else {
+		state->min_poll_interval = 100;
+		state->max_poll_interval = 1000;
+	}
 	state->poll_interval_increment = -1;
 	state->epp = config->lp_mode_epp;
 	state->epb = SETTING_IGNORE;
@@ -614,14 +769,21 @@ static int build_default_states(lpmd_config_t *config)
 	state->enter_cpu_load_thres = 100;
 	state->itmt_state = config->ignore_itmt ? SETTING_IGNORE : SETTING_RESTORE;
 	state->irq_migrate = 1;
-	state->min_poll_interval = 1000;
-	state->max_poll_interval = 1000;
+	if (config->util_entry_delay > 0) {
+		state->min_poll_interval = config->util_entry_delay;
+		state->max_poll_interval = config->util_entry_delay;
+	} else {
+		state->min_poll_interval = 1000;
+		state->max_poll_interval = 1000;
+	}
+	state->poll_interval_increment = -1;
 	state->epp = config->lp_mode_epp == SETTING_IGNORE ? SETTING_IGNORE : SETTING_RESTORE;
 	state->epb = SETTING_IGNORE;
 	state->cpumask_idx = CPUMASK_ONLINE;
 	state->steady = 1;
 	state->valid = 1;
 
+	default_util_mode = 1;
 	config->config_state_count = 2;
 	return 0;
 }
@@ -707,6 +869,7 @@ int lpmd_build_config_states(lpmd_config_t *lpmd_config)
 	lpmd_config_state_t *state;
 	int i;
 
+	polling_enabled = 0;
 	build_default_states(lpmd_config);
 
 	for (i = CONFIG_STATE_BASE; i < CONFIG_STATE_BASE + lpmd_config->config_state_count; i++) {
