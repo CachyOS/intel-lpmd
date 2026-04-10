@@ -453,7 +453,7 @@ int lpmd_get_config(lpmd_config_t *lpmd_config)
 	}
 
 process_xml:
-	doc = xmlReadFile (file_name, NULL, 0);
+	doc = xmlReadFile (file_name, NULL, XML_PARSE_NONET);
 	if (doc == NULL) {
 		lpmd_log_msg ("error: could not parse file %s\n", file_name);
 		return LPMD_ERROR;
