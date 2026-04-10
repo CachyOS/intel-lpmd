@@ -66,7 +66,11 @@ int lpmd_read_str(char *path, char *str, int size)
 
 	if (ret >= size)
 		ret = size - 1;
-	str[ret - 1] = '\0';
+	str[ret] = '\0';
+
+	/* Strip trailing newline */
+	if (ret > 0 && str[ret - 1] == '\n')
+		str[ret - 1] = '\0';
 
 	lpmd_log_debug ("Read \"%s\" from %s\n", str, path);
 	return 0;
